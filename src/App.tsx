@@ -530,8 +530,8 @@ const FormInput = ({ label, value, onChange, placeholder, required = false }: an
 );
 
 export default function App() {
-  const API_BASE_URL = 'http://localhost:3000';
-  const WS_BASE_URL = "http://localhost:3000";
+  const API_BASE_URL = 'https://clinicbackend2-production.up.railway.app';
+  const WS_BASE_URL = "https://clinicbackend2-production.up.railway.app";
   
   const [role, setRole] = useState<'receptionist' | 'doctor' | null>(null);
   const [activeRouteIndex, setActiveRouteIndex] = useState<number | null>(null);
