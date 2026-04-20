@@ -530,7 +530,9 @@ const FormInput = ({ label, value, onChange, placeholder, required = false }: an
 );
 
 export default function App() {
-  const API_BASE_URL = 'https://clinicbackend2-production.up.railway.app';
+  const API_BASE_URL = 'http://localhost:3000';
+  const WS_BASE_URL = "http://localhost:3000";
+  
   const [role, setRole] = useState<'receptionist' | 'doctor' | null>(null);
   const [activeRouteIndex, setActiveRouteIndex] = useState<number | null>(null);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -548,7 +550,7 @@ const [newMed, setNewMed] = useState({
   price: '',
   manufacturer: '',
   category: '',
-  unit: '', // New field for the "tube of 25 gm" part
+  unit: '', 
   generic1: '',
   generic2: '',
   sideEffects: '',
@@ -575,6 +577,7 @@ const [searchResults, setSearchResults] = useState<Patient[]>([]);
 const [completeAfterBillPrint, setCompleteAfterBillPrint] = useState(false);
 const [isGeneratingDiagnosis, setIsGeneratingDiagnosis] = useState(false);
 const [diagnosisError, setDiagnosisError] = useState('');
+const socketRef = useRef<WebSocket | null>(null);
 const diagnosisTimerRef = useRef<number | null>(null);
 const diagnosisRequestRef = useRef(0);
 // const checkReturningPatient = async (name: string, phone: string) => {
@@ -685,7 +688,7 @@ const requestDiagnosisSuggestion = async (visitId: number, complaint: string) =>
     setIsGeneratingDiagnosis(true);
     setDiagnosisError('');
 
-    const res = await fetch(`http://localhost:3000/api/diagnosis/predict`, {
+    const res = await fetch(`https://clinicbackend2-production.up.railway.app/api/diagnosis/predict`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ chief_complaint: trimmedComplaint })
@@ -786,11 +789,9 @@ const selectPatient = async (patient: Patient, matchedPatients: Patient[] = [pat
       )
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
     
-    // 2. Update states
     setPatientMedHistory(mergedHistory);
     setSelectedHistoryPatient(patient);
     
-    // 3. Clear search and switch view
     setPatientRecordsSearchQuery('');
     setSearchResults([]);
     setView('patient_records'); 
@@ -863,7 +864,6 @@ const selectMedicineSuggestion = async (idx: number, medicine: any) => {
   setActiveInputIndex(null);
   await fetchMedicineDetails(medicine.name || medicine.brand_name || '', idx);
 };
-  // Form States
   const [newPatient, setNewPatient] = useState({
     name: '', age: '', gender: 'Male', address: '', phone: '', weight: '', height: '', bp: '',bmi: '',  
   pulse: '',
@@ -884,7 +884,6 @@ const handleAddMedicine = async (e: React.FormEvent) => {
 
     if (response.ok) {
       alert("Medicine added and indexed in Redis!");
-      // Reset logic...
     } else {
       const err = await response.json();
       alert(`Error: ${err.error}`);
@@ -926,20 +925,66 @@ useEffect(() => {
   }
 }, [newPatient.weight, newPatient.height]);
   useEffect(() => {
-    if (isAuthenticated) {
-      fetchPatients();
-      fetchQueue();
-      // Setup Polling for real-time updates (every 5 seconds)
-      const pollInterval = setInterval(() => {
-        fetchQueue();
-        fetchPatients();
-      }, 5000);
-
-      return () => {
-        clearInterval(pollInterval);
-      };
+    if (!isAuthenticated || !role) {
+      socketRef.current?.close();
+      socketRef.current = null;
+      return;
     }
-  }, [isAuthenticated]);
+
+    let reconnectTimeout: number | null = null;
+    let shouldReconnect = true;
+
+    const connectSocket = () => {
+      const socketUrl = new URL('/ws', WS_BASE_URL);
+      socketUrl.searchParams.set('role', role);
+
+      const socket = new WebSocket(socketUrl.toString());
+      socketRef.current = socket;
+
+      socket.onopen = () => {
+        fetchPatients();
+        fetchQueue();
+      };
+
+      socket.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data);
+
+          if (message?.type === 'clinic.snapshot') {
+            setPatients(Array.isArray(message.payload?.patients) ? message.payload.patients : []);
+            setQueue(Array.isArray(message.payload?.queue) ? message.payload.queue : []);
+          }
+        } catch (error) {
+          console.error('Failed to parse WebSocket message:', error);
+        }
+      };
+
+      socket.onerror = (error) => {
+        console.error('WebSocket error:', error);
+      };
+
+      socket.onclose = () => {
+        if (socketRef.current === socket) {
+          socketRef.current = null;
+        }
+
+        if (shouldReconnect) {
+          reconnectTimeout = window.setTimeout(connectSocket, 3000);
+        }
+      };
+    };
+
+    connectSocket();
+
+    return () => {
+      shouldReconnect = false;
+      if (reconnectTimeout !== null) {
+        window.clearTimeout(reconnectTimeout);
+      }
+      socketRef.current?.close();
+      socketRef.current = null;
+    };
+  }, [WS_BASE_URL, isAuthenticated, role]);
 
   const fetchPatients = async () => {
     const res = await fetch(`${API_BASE_URL}/api/patients`);
@@ -954,18 +999,14 @@ useEffect(() => {
   const clearQueue = async () => {
     if (window.confirm('Are you sure you want to clear the entire active queue? This will mark all current visits as completed.')) {
       await fetch(`${API_BASE_URL}/api/queue/clear`, { method: 'POST' });
-      fetchQueue();
     }
   };
 const deleteFromQueue = async (visitId: number) => {
   if (window.confirm('Are you sure you want to remove this patient from the queue?')) {
     try {
-      // Assuming your backend has a DELETE endpoint for visits
       await fetch(`${API_BASE_URL}/api/visits/${visitId}`, { 
         method: 'DELETE' 
       });
-
-      fetchQueue();
     } catch (error) {
       console.error("Failed to remove patient from queue:", error);
     }
@@ -995,7 +1036,7 @@ const deleteFromQueue = async (visitId: number) => {
     });
     const { id } = await res.json();
     console.log(res);
-    // Auto check-in
+
     await fetch(`${API_BASE_URL}/api/visits`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1004,8 +1045,6 @@ const deleteFromQueue = async (visitId: number) => {
     
     setNewPatient({ name: '', age: '', gender: 'Male', address: '', phone: '', weight: '', height: '', bp: '' ,bmi: '',pulse: '',  
   rr: '',visit_type: 'Walk-in'});
-    fetchPatients();
-    fetchQueue();
     setView('list');
   };
 // useEffect(() => {
@@ -1021,11 +1060,10 @@ const deleteFromQueue = async (visitId: number) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ patient_id: patientId })
     });
-    fetchQueue();
   };
 
   const startConsultation = async (visitId: number) => {
-    // Update status to consulting immediately
+
     await fetch(`${API_BASE_URL}/api/visits/${visitId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -1039,7 +1077,6 @@ const deleteFromQueue = async (visitId: number) => {
     await loadPatientHistoryForPrint(data);
     
     setView('consult');
-    fetchQueue(); // Refresh queue to show "In Consultation"
   };
   const saveConsultation = async (status: 'consulting' | 'completed') => {
     if (!activeVisit) return;
@@ -1110,7 +1147,6 @@ fetch(GOOGLE_SHEET_URL, {
 .catch(err => console.error("Fetch error:", err));
       setView('list');
       setActiveVisit(null);
-      fetchQueue();
     }
   };
 
@@ -2147,7 +2183,6 @@ fetch(GOOGLE_SHEET_URL, {
     <input
       type="text"
       value={rx.frequency}
-      // Simplified: Just toggle the list on/off
       onFocus={() => setActiveFreqIndex(idx)}
       onBlur={() => setActiveFreqIndex(null)} 
       onChange={(e) => updatePrescription(idx, 'frequency', e.target.value)}
@@ -2193,23 +2228,21 @@ fetch(GOOGLE_SHEET_URL, {
     <input
       type="text"
       value={rx.route}
-      // Show menu when focused
       onFocus={() => setActiveRouteIndex(idx)} 
-      // Hide menu when clicking away
       onBlur={() => setActiveRouteIndex(null)}
       onChange={(e) => updatePrescription(idx, 'route', e.target.value)}
       className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white"
       placeholder="e.g. Oral"
     />
 
-    {/* The Route Menu (Matches your cinematic UI) */}
+
     {activeRouteIndex === idx && (
       <div className="absolute left-0 right-0 top-full z-30 mt-1 max-h-60 overflow-y-auto rounded-xl border border-slate-200 bg-white p-1 shadow-xl">
         {['Oral', 'IV', 'IM', 'Topical', 'Sublingual', 'Inhalation'].map((r) => (
           <button
             key={r}
             type="button"
-            // onMouseDown fires BEFORE onBlur, selecting the value instantly
+
             onMouseDown={() => {
               updatePrescription(idx, 'route', r);
               setActiveRouteIndex(null);
@@ -2297,7 +2330,6 @@ fetch(GOOGLE_SHEET_URL, {
 
               {/* Right Column: Patient Info & History */}
               <div className="col-span-4 space-y-6">
-                {/* Patient Summary Card */}
                 <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
                   <h3 className="font-bold text-slate-900 mb-4 border-b border-slate-100 pb-2">Patient Summary</h3>
                   <div className="space-y-4">
@@ -2347,7 +2379,7 @@ fetch(GOOGLE_SHEET_URL, {
                 </div>
                 <div className="space-y-6">
   
-  {/* NEW: Payment Manager Component */}
+
   <PaymentManager 
   consultationFee={consultationFee}
   setConsultationFee={setConsultationFee}
@@ -2363,7 +2395,7 @@ fetch(GOOGLE_SHEET_URL, {
 </div>
               </div>
 
-              {/* Hidden Print Component */}
+
               <div className="hidden">
                <PrescriptionPrint 
     ref={printRef} 
@@ -2375,7 +2407,7 @@ fetch(GOOGLE_SHEET_URL, {
   
               </div>
               
-              {/* Right Sidebar */}
+
             </div>
           )}
 
