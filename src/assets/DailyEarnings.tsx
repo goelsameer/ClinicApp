@@ -14,7 +14,7 @@ export default function DailyEarnings() {
   const fetchDailyStats = async () => {
     try {
       setIsLoading(true);
-      const res = await fetch('http://localhost:3000/api/reports/daily-collection');
+      const res = await fetch('https://clinicbackend2-production.up.railway.app/api/reports/daily-collection');
       const data = await res.json();
       setStats({
         totalCash: Number(data?.totalCash || 0),

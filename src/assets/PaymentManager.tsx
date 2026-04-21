@@ -22,7 +22,7 @@ export const PaymentManager = ({
 
   const fetchDailyStats = async () => {
     try {
-      const res = await fetch('http://localhost:3000/api/reports/daily-collection');
+      const res = await fetch('https://clinicbackend2-production.up.railway.app/api/reports/daily-collection');
       await res.json();
     } catch (err) {
       console.error("Error fetching stats:", err);
